@@ -3,6 +3,10 @@ import pywfm
 import os
 import pandas as pd
 import numpy as np
+from shapely.geometry import Point
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import matplotlib.colors as colors
 
 
 #Path to ESJWRM 2.2
@@ -13,6 +17,8 @@ shp_out=r"P:\Projects\5658_NSJWCD\GIS\Vector\Model Shapefiles\Streams"
 
 #Output path for csvs
 csv_out=r"P:\Projects\5658_NSJWCD\ESJWRM_v2_2\Mokelumne"
+
+dir_out=r"P:\Projects\5658_NSJWCD\ESJWRM_v2_2\Dry_Creek"
 
 
 #preprocessor file
@@ -40,8 +46,11 @@ strm_node_id=m.get_stream_node_ids()
 #mokelumne
 mok=streams[streams['ReachName']=='Mokelumne River'].reset_index(drop=True)
 
+
+
 #Let's rename to join with node coordinates
 mok=mok.rename(columns={"GroundwaterNodes": "NodeID"})
+
 
 #Let's add coordinates
 mok=pd.merge(mok, nodes, how="left", on=["NodeID"])
@@ -111,3 +120,91 @@ mok_rech_gain['Stream_gain']=mok_rech_gain['Stream_gain']/43560
 for date in dates_with_gains:
     mok_rech_gain[mok_rech_gain["Date"]==date].to_csv(os.path.join(csv_out,"Mok_str_gain"+np.datetime_as_string(date)[0:10]+".csv"))
 
+#Now, let's do it again for Dry Creek
+
+#Dry Creek
+stream_name='Dry Creek'
+crs='epsg:26910'
+bounds=r"P:\Projects\5658_NSJWCD\GIS\Vector\NSJWCD\NSJWCD_26910.shp"
+model_version="2_1"
+
+#lines shapefiles for the plots
+lines=[["North System",gpd.read_file(r"P:\Projects\5658_NSJWCD\GIS\Vector\NSJWCD\North_System_26910.shp"),"#987db7"]]
+polygons=[["Tracy Lake",gpd.read_file(r"P:\Projects\5658_NSJWCD\GIS\Vector\NSJWCD\Tracy_Lake_26910.shp"),"#1f78b4"]]
+
+stream=streams[streams['ReachName']=='Dry Creek'].reset_index(drop=True)
+stream=stream.rename(columns={"GroundwaterNodes": "NodeID"})
+#Let's add coordinates
+stream=pd.merge(stream, nodes, how="left", on=["NodeID"])
+#let's export to csv
+stream.to_csv(os.path.join(shp_out,stream_name+".csv"),index=False)
+geometry = [Point(xy) for xy in zip(stream.X, stream.Y)]
+geo_df = gpd.GeoDataFrame(stream, crs=crs, geometry=geometry)
+#Let's export to shapefile
+geo_df.to_file(os.path.join(shp_out,"nodes.shp"))
+
+#Let's import shapefile with boundaries
+bounds_gdf=gpd.read_file(bounds)
+
+#Let's only select nodes within the NSJWCD
+geo_df=geo_df[geo_df.geometry.within(bounds_gdf.geometry[0])]
+
+#Let's add column for dates
+geo_df["Date"]=np.nan
+#Let's add column for stream gains
+geo_df['Stream_gain']=np.nan
+
+#Let's create empty geodataframe now
+geo_df2=gpd.GeoDataFrame(columns=geo_df.columns)
+
+#Let's loop through timesteps now
+while not m.is_end_of_simulation():
+
+    #Let's retrieve the stream-aquifer interaction data
+    m.advance_time()
+    m.read_timeseries_data()
+    m.simulate_for_one_timestep()
+
+    #Let's retrieve stream gain from groundwater
+    strm_gain_dum=pd.DataFrame({'StreamNodes':strm_node_id,
+                                'Stream_gain':m.get_stream_gain_from_groundwater()})
+    geo_df_dum=geo_df.drop(['Stream_gain'],axis=1)
+    geo_df_dum["Date"]=pd.to_datetime(m.get_current_date_and_time()[0:m.get_current_date_and_time().rfind("_")],format="%m/%d/%Y")
+    geo_df_dum=pd.merge(geo_df_dum, strm_gain_dum, how="left", on=['StreamNodes'])
+    geo_df2=pd.concat([geo_df2, geo_df_dum], ignore_index=True)
+    m.advance_state()
+
+m.kill()
+
+#Let's convert to AF/month
+geo_df2['Stream_gain']=geo_df2['Stream_gain']/43560
+
+#Maximum gain
+max_dum = np.max(np.abs(geo_df2.Stream_gain))
+
+dates=np.unique(geo_df2.Date)
+
+ts=dates[0]
+
+for j in range(len(dates)):
+    #Geodataframe for that time step
+    geo_df_ts=geo_df2[geo_df2.Date==dates[j]].copy()
+
+    #Let's add size
+    geo_df_ts["size"]=np.abs(10*geo_df_ts.Stream_gain.values/max_dum)
+
+
+    #Let's start plot
+    fig, ax = plt.subplots(figsize=(16, 9))
+
+    for i in range(len(lines)):
+        lines[i][1].plot(ax=ax,color=lines[i][2],linewidth=0.5,label=lines[i][0], lw=2)
+
+    for i in range(len(polygons)):
+        polygons[i][1].plot(ax=ax,facecolor=polygons[i][2],label=polygons[i][0])
+
+    plt.scatter(geo_df_ts.X,geo_df_ts.Y,s=geo_df_ts["size"],marker='o',norm=colors.Normalize(vmin=-max_dum, vmax=max_dum),cmap='coolwarm',c=geo_df_ts.Stream_gain)
+
+
+    plt.savefig(os.path.join(dir_out, "Gain_from_GW_"+model_version+"_"+np.datetime_as_string(ts)[:10].replace("-","_")+".png"))
+    plt.close()
