@@ -1,5 +1,5 @@
 import pywfm
-#import pyhf
+import pyhf
 import os
 import pandas as pd
 import numpy as np
@@ -7,6 +7,8 @@ from shapely.geometry import Point
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
+from moviepy.editor import VideoClip
+from moviepy.video.io.bindings import mplfig_to_npimage
 
 
 #Path to ESJWRM 2.2
@@ -124,13 +126,12 @@ for date in dates_with_gains:
 
 #Dry Creek
 stream_name='Dry Creek'
+pyhf.utils.iwfm_gaining(m,stream_name)
 crs='epsg:26910'
-bounds=r"P:\Projects\5658_NSJWCD\GIS\Vector\NSJWCD\NSJWCD_26910.shp"
+bounds=r"P:\Projects\5658_NSJWCD\GIS\Vector\NSJWCD\NSJWCD_buff_26910.shp"
 model_version="2_1"
 
-#lines shapefiles for the plots
-lines=[["North System",gpd.read_file(r"P:\Projects\5658_NSJWCD\GIS\Vector\NSJWCD\North_System_26910.shp"),"#987db7"]]
-polygons=[["Tracy Lake",gpd.read_file(r"P:\Projects\5658_NSJWCD\GIS\Vector\NSJWCD\Tracy_Lake_26910.shp"),"#1f78b4"]]
+
 
 stream=streams[streams['ReachName']=='Dry Creek'].reset_index(drop=True)
 stream=stream.rename(columns={"GroundwaterNodes": "NodeID"})
@@ -176,6 +177,12 @@ while not m.is_end_of_simulation():
 
 m.kill()
 
+geo_df2.to_csv(os.path.join(dir_out,"Dry_Creek_gain_from_gw.csv"),index=False)
+
+
+
+
+
 #Let's convert to AF/month
 geo_df2['Stream_gain']=geo_df2['Stream_gain']/43560
 
@@ -184,27 +191,71 @@ max_dum = np.max(np.abs(geo_df2.Stream_gain))
 
 dates=np.unique(geo_df2.Date)
 
-ts=dates[0]
+
 
 for j in range(len(dates)):
     #Geodataframe for that time step
     geo_df_ts=geo_df2[geo_df2.Date==dates[j]].copy()
+    geo_df_ts=geo_df_ts.reset_index(drop=True)
 
     #Let's add size
-    geo_df_ts["size"]=np.abs(10*geo_df_ts.Stream_gain.values/max_dum)
+    geo_df_ts["size"]=2+np.abs(8*geo_df_ts.Stream_gain.values/max_dum)
 
 
     #Let's start plot
     fig, ax = plt.subplots(figsize=(16, 9))
 
-    for i in range(len(lines)):
-        lines[i][1].plot(ax=ax,color=lines[i][2],linewidth=0.5,label=lines[i][0], lw=2)
-
-    for i in range(len(polygons)):
-        polygons[i][1].plot(ax=ax,facecolor=polygons[i][2],label=polygons[i][0])
-
-    plt.scatter(geo_df_ts.X,geo_df_ts.Y,s=geo_df_ts["size"],marker='o',norm=colors.Normalize(vmin=-max_dum, vmax=max_dum),cmap='coolwarm',c=geo_df_ts.Stream_gain)
+    im = plt.imread(r"P:\Projects\5658_NSJWCD\GIS\Maps\ESJWRM\Dry_Creek\Background.png")
+    im = ax.imshow(im, extent=[637716.751, 673555.789, 4219667.129, 4245007.864])
 
 
-    plt.savefig(os.path.join(dir_out, "Gain_from_GW_"+model_version+"_"+np.datetime_as_string(ts)[:10].replace("-","_")+".png"))
+    scat=plt.scatter(geo_df_ts.X,geo_df_ts.Y,s=geo_df_ts["size"],marker='o',norm=colors.Normalize(vmin=-max_dum, vmax=max_dum),cmap='seismic',c=geo_df_ts.Stream_gain)
+
+
+    for i in range(geo_df_ts.shape[0]):
+        plt.annotate(str(np.round(geo_df_ts.loc[i,'Stream_gain'],2)),(geo_df_ts.loc[i,'X']-150,300+geo_df_ts.loc[i,'Y']),fontsize='xx-small',rotation='vertical')
+
+    plt.title(np.datetime_as_string(dates[j])[:10])
+
+    plt.savefig(os.path.join(dir_out, "Gain_from_GW_"+model_version+"_"+np.datetime_as_string(dates[j])[:10].replace("-","_")+".png"))
     plt.close()
+
+def make_frame(t):
+    plt.close()
+    t=int(t)
+    # Geodataframe for that time step
+    geo_df_ts = geo_df2[geo_df2.Date == dates[t]].copy()
+    geo_df_ts = geo_df_ts.reset_index(drop=True)
+
+    # Let's add size
+    geo_df_ts["size"] = 2 + np.abs(8 * geo_df_ts.Stream_gain.values / max_dum)
+
+    # Let's start plot
+    fig, ax = plt.subplots(figsize=(16, 9))
+
+    im = plt.imread(r"P:\Projects\5658_NSJWCD\GIS\Maps\ESJWRM\Dry_Creek\Background.png")
+    im = ax.imshow(im, extent=[637716.751, 673555.789, 4219667.129, 4245007.864])
+
+    scat = plt.scatter(geo_df_ts.X, geo_df_ts.Y, s=geo_df_ts["size"], marker='o',
+                       norm=colors.Normalize(vmin=-max_dum, vmax=max_dum), cmap='seismic', c=geo_df_ts.Stream_gain)
+
+    # cbar = plt.colorbar(scat)
+
+    for i in range(geo_df_ts.shape[0]):
+        plt.annotate(str(np.round(geo_df_ts.loc[i, 'Stream_gain'], 2)),
+                     (geo_df_ts.loc[i, 'X'] - 150, 300 + geo_df_ts.loc[i, 'Y']), fontsize='xx-small',
+                     rotation='vertical')
+
+    plt.title(np.datetime_as_string(dates[t])[:10])
+
+
+    return mplfig_to_npimage(fig)
+
+animation = VideoClip(make_frame, duration=len(dates))
+plt.close()
+animation.write_videofile(os.path.join(r"C:\Users\jdiaz\OneDrive - HydroFocus\5658\ESJWRM_v2_2\Dry_Creek", stream_name+"_gain_from_gw.mp4"),fps = 1)
+
+#Let's get time steps with gains
+dates_with_gains=np.unique(geo_df2.loc[(geo_df2['Stream_gain']>0)&(geo_df2["StreamNode"]),"Date"].values)
+
+
